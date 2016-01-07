@@ -1,0 +1,345 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <getopt.h>
+#include <unistd.h>
+#include <errno.h>
+#include <string.h>
+#include <strings.h>
+#include "cachelab.h"
+//created by Ndukwe Iko 
+//user_id 930874684
+
+typedef unsigned long long int mem_addr;
+
+typedef struct{
+  int valid; /*identifies the valid bit*/
+  int lru; /*counts times set_line has been mapped to */
+  mem_addr tag; /*up to 64 bit memory address*/
+} set_line; /* refers to a line within a given set*/
+
+
+
+typedef struct{
+  set_line  *lines; /*declare ptr to set_line array*/
+} cache_set; /*cache set contains all the lines within a given set*/
+
+typedef struct{
+  cache_set *sets;/* array of cache_set objects*/
+} cache; /* the cache stores all the cache_sets*/
+
+typedef struct{
+  int s; /*number of set index bits*/
+  int b; /*number of offset block bits*/
+  int E; /*number of lines per set*/
+  int hits;
+  int misses;
+  int evictions;
+  //the missing S is derived via bitshifting operations and B is not explicitly needed in this implementation.
+} cache_param;
+
+                                                                                                                                                          
+
+
+cache make_cache(long long int num_sets, int num_lines){
+  
+  cache new_cache;
+  cache_set set;
+  set_line line;
+  /*struct member names are plural to diffentiate between these local variable names*/
+  int setndx;
+  int linendx;
+  /*new_cache.sets is equivalent to an array of cache_sets, so we allocate space for memory equal to (1 cache_set * the total number of sets in the cache)*/ 
+  new_cache.sets = (cache_set*) malloc(sizeof(cache_set) * num_sets);
+  
+ for(setndx = 0; setndx < num_sets; setndx++){
+   /*set.lines is equiavalent to an array of set_lines, so we allocate space for memory equal to (1 set_line * number of lines in a set in the cache)*/
+   set.lines = (set_line*) malloc(sizeof(set_line) * num_lines);
+   new_cache.sets[setndx] = set;
+   /*for each set, we must iterate through and initialize the values for the lines that are present*/
+   for(linendx = 0; linendx < num_lines; linendx++){
+     line.valid = 0;
+     line.lru = 0;
+     line.tag = 0;
+     /*now store each line within set.lines[linendx], an array of set_line objects*/
+     set.lines[linendx] = line;
+    
+  }
+
+ }
+
+ return new_cache;
+
+}
+
+
+
+void free_cache(cache test_cache, long long int num_sets, int num_lines){
+  
+  int setndx;
+  cache_set temp_set;
+  cache_set temp_line;
+  for(setndx = 0; setndx < num_sets ; setndx++){
+    temp_set =  test_cache.sets[setndx]; /*cache.sets refers to an array of cache_set objects, so temp_set refers to one cache_set object*/
+    if(temp_set.lines != NULL){
+      temp_line.lines = temp_set.lines; /*refers to an array of set_line objects*/
+      free(temp_line.lines);/*free the array of set_line objects*/
+      
+    }
+
+  }
+
+  if(test_cache.sets != NULL){
+    free(test_cache.sets); /*free the array of the cache set objects*/
+
+  }
+
+}
+
+
+
+
+
+int find_free_line(cache_set s, cache_param param){
+  set_line line;
+  int i;
+  int num_lines = param.E;
+ 
+  for(i = 0; i < num_lines; i++){ 
+    line = s.lines[i];//s.lines is an array of set_line objects
+    if(line.valid == 0){ // if equal to zero, the set is unoccupied
+      return i; //returns the index of the free line
+    }
+
+  }
+
+  return 0;
+}
+
+
+
+int get_LRU(cache_set s, cache_param param, int* meta_d){
+  set_line temp_line;
+  int min_ndx = 0; //line within a set that has been mapped to the least, we initialize the min_val and min_ndx as well as max_val to the 0th set
+  int min_val = s.lines[0].lru; //number of times that the line at min_ndx has been mapped to
+  int max_val = s.lines[0].lru;
+  int num_lines = param.E;
+  int i;
+  int lru_count;
+ 
+  for(i = 1; i < num_lines; i++){ //start iteration at i = 1 as the values for min_val and lru_count will be equal for i = 0
+    temp_line =  s.lines[i]; //temp_line refers to a single set_line object
+    lru_count = temp_line.lru; 
+    if(min_val > lru_count){ //need to update the min value and ndx
+      min_val = lru_count;
+      min_ndx = i;
+    }
+
+    if(max_val < lru_count){
+      max_val = lru_count;
+   }
+
+  
+  }
+
+  //allows us to "return" the values for the lru ndx and the mru set_lines value, as we are only allowed 1 formal return statement
+  meta_d[0] = max_val; 
+  
+
+  return min_ndx;
+
+}
+
+
+
+cache_param run_cache(cache test_cache, cache_param param, mem_addr address){
+  int init_hits = param.hits;
+  int num_lines = param.E;
+  int block_offset = param.b;
+  int set_ndx = param.s;
+  int tag_size = (64 - (set_ndx + block_offset));
+  mem_addr addr_tag = address >> (param.s + param.b);
+  mem_addr no_tag = address << tag_size; //64 bit address with the tag portion ommitted
+  mem_addr set_ndxbits = no_tag >> ((tag_size) + (block_offset)); 
+  int line_ndx;
+  cache_set test_set = test_cache.sets[set_ndxbits]; //references the set in the cache being accessed. derived from the bit pattern from set_ndxbits
+  int cache_capacity = 1; //flag to tell us if the cache is full or not.
+  set_line test_line;
+  mem_addr test_tag;
+
+  for(line_ndx = 0; line_ndx < num_lines; line_ndx++){
+
+    test_line = test_set.lines[line_ndx];
+    test_tag =  test_line.tag;
+    
+    if(test_line.valid != 0){
+      //the valid bit has been set
+      if(test_tag == addr_tag){
+	param.hits++;
+	test_line.lru++;
+	test_set.lines[line_ndx] = test_line;
+
+      }
+
+
+    }
+
+    //if we find an unset valid bit, the cache can't be 'full'
+    else if(test_line.valid == 0){
+      cache_capacity = 0;
+    }
+
+   
+
+  }
+
+
+  if(init_hits == param.hits){
+    //the value of hits was not incremented while iterating through the cache_set set_line array
+    //if we did not 'hit' the target, we must've missed it.
+    param.misses++;
+
+  }
+
+
+  else{
+
+    return param;
+  }
+
+
+  //Following code handles the case for a miss
+  
+  int* meta_d = (int*)malloc(sizeof(int));
+  int new_min_ndx = get_LRU(test_set, param, meta_d);
+  
+
+
+  if(cache_capacity == 0){
+    //unless the program goes through the 'else if' clause from the 'for' loop, the value of cache_capacity will be 1                                                                
+    //because cache_capcity is 0 here, we know that the cache is not full.                                                                                                           
+    int empty_ndx = find_free_line(test_set, param);
+    //the index of an empty line within the set                                                                                                                                      
+
+    test_set.lines[empty_ndx].valid = 1;
+    //because the line has never been empty we must set the valid bit                                                                                                                
+    test_set.lines[empty_ndx].tag = addr_tag;
+    test_set.lines[empty_ndx].lru = meta_d[0] + 1;
+
+  }
+
+
+  else{
+    //the cache is full and we must perform evictions                                                                                                                                
+
+    param.evictions++;
+    test_set.lines[new_min_ndx].lru = meta_d[0] + 1;
+    //getLRU returns metadata for min and max accesses. we make the lru attribute of the chosen line one greater than the max, so that it is not constantly the LRU of the set       
+    test_set.lines[new_min_ndx].tag = addr_tag;
+
+  }
+
+
+
+  free(meta_d);
+  return param;
+
+}
+
+
+int main(int argc, char **argv)
+{
+
+  
+  char *file_name;
+  char char_arg;
+  
+  
+  cache_param param;
+  param.hits = 0;
+  param.misses = 0;
+  param.evictions = 0;
+  cache test_cache;
+  
+  char access_type;
+  int byte_size;
+  mem_addr address;
+  long long int num_sets;//S
+  
+  
+  while( (char_arg = getopt(argc, argv, "h::v::s:E:b:t:")) != -1){
+    
+    switch(char_arg){
+
+    case('s'):
+      
+      param.s = atoi(optarg);
+      break;
+
+    case('E'):
+      
+      param.E = atoi(optarg);
+      break;
+    
+    case('b'):
+      
+      param.b = atoi(optarg);
+
+
+    case('t'):
+      file_name = optarg;
+
+    case('h'):
+      break;
+
+
+    case('v'):
+      break;
+      
+    }
+
+  }
+  
+  num_sets = 1 << param.s; // calculates the value of 2 ^s by left shifting an integer, 1.  which gives us  S, the total number of sets.
+  int num_lines = param.E;
+  test_cache = make_cache(num_sets, num_lines); 
+  FILE *fp = fopen(file_name, "r");
+  if(!fp){//only true if fp is the null pointer
+    fprintf(stderr, "%s: %s\n", file_name, strerror(errno));
+
+  }
+  
+  else{
+    while(fscanf(fp, " %c %llx,%d", &access_type, &address, &byte_size) == 3){
+      switch(access_type){
+	//I flags can be neglected for this implementation
+      case('I'):
+	break;
+
+      case('M'):
+	param = run_cache(test_cache,param, address);
+	param = run_cache(test_cache,param, address);
+	break;
+
+      case('L'):
+	param = run_cache(test_cache,param, address);
+	break;
+      
+      case('S'):
+	param = run_cache(test_cache,param, address);
+	break;
+
+      default:
+	break;
+    
+      
+      }
+    }
+
+  }
+  
+  
+   printSummary(param.hits, param.misses, param.evictions);
+   free_cache(test_cache, num_sets, num_lines); //return memory allocated for the cache to the heap
+   fclose(fp); //close the file
+   return 0;
+}
